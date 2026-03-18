@@ -1,0 +1,38 @@
+{
+  "name": "website-to-video",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "remotion:studio": "remotion studio",
+    "remotion:render:reel": "remotion render Reel output/reel-1080x1920.mp4",
+    "remotion:render:linkedin": "remotion render LinkedIn output/linkedin-1920x1080.mp4",
+    "remotion:render:square": "remotion render Square output/square-1080x1080.mp4",
+    "remotion:render:all": "npm run remotion:render:reel && npm run remotion:render:linkedin && npm run remotion:render:square"
+  },
+  "dependencies": {
+    "@google/genai": "^1.45.0",
+    "@google/generative-ai": "^0.24.1",
+    "@remotion/cli": "^4.0.0",
+    "@remotion/player": "^4.0.0",
+    "cheerio": "^1.0.0",
+    "framer-motion": "^11.0.0",
+    "next": "^14.2.0",
+    "pdf-parse": "^1.1.1",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "remotion": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.5.0"
+  }
+}

@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gradient-to-br from-warm-100 via-warm-200 to-warm-300 text-warm-800 min-h-screen;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+}
+
+@layer components {
+  /* Glass card - primary container */
+  .glass-card {
+    @apply backdrop-blur-md bg-white/70 border border-white/50 rounded-2xl shadow-glass;
+    background-image: linear-gradient(135deg, rgba(255,255,255,0.4) 0%, rgba(255,255,255,0.1) 100%);
+  }
+
+  /* Glass panel - secondary container */
+  .glass-panel {
+    @apply backdrop-blur-lg bg-white/60 border border-warm-200/40 rounded-xl shadow-glass;
+  }
+
+  /* Glass input field */
+  .glass-input {
+    @apply backdrop-blur-sm bg-white/50 border border-warm-300/50 rounded-xl px-4 py-3 text-warm-800 placeholder-warm-500/60 transition-all duration-200;
+    @apply focus:outline-none focus:border-accent/50 focus:bg-white/70 focus:shadow-glow focus:ring-2 focus:ring-accent/10;
+  }
+
+  /* Glass button primary */
+  .glass-btn {
+    @apply px-6 py-3 rounded-xl font-medium transition-all duration-200;
+    @apply bg-gradient-to-r from-accent to-amber-500 text-white shadow-lg shadow-amber-500/20;
+    @apply hover:shadow-xl hover:shadow-amber-500/30 hover:-translate-y-0.5;
+    @apply active:translate-y-0 active:shadow-md;
+    @apply disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-lg;
+  }
+
+  /* Glass button secondary */
+  .glass-btn-secondary {
+    @apply px-5 py-2.5 rounded-xl font-medium transition-all duration-200;
+    @apply bg-white/60 border border-warm-300/50 text-warm-700 backdrop-blur-sm;
+    @apply hover:bg-white/80 hover:border-warm-400/50;
+    @apply active:bg-white/90;
+  }
+
+  /* Glass overlay */
+  .glass-overlay {
+    @apply backdrop-blur-sm bg-warm-900/20;
+  }
+
+  /* Frosted badge */
+  .glass-badge {
+    @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-medium;
+    @apply bg-white/60 border border-warm-200/40 backdrop-blur-sm text-warm-600;
+  }
+
+  /* Text gradient */
+  .text-gradient {
+    @apply bg-gradient-to-r from-accent-dark via-accent to-amber-500 bg-clip-text text-transparent;
+  }
+
+  /* Warm subtle divider */
+  .glass-divider {
+    @apply border-warm-200/40;
+  }
+}
+
+@layer utilities {
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-out;
+  }
+  .animate-slide-up {
+    animation: slideUp 0.4s ease-out;
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
