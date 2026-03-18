@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { submitAudioJob } from '@/lib/deapi';
-import { generateImage } from '@/lib/gemini-image';
-import type { VideoScript, AssetJob, Scene } from '@/lib/types';
+import { generateImage, generateStoryboard } from '@/lib/gemini-image';
+import type { VideoScript, AssetJob } from '@/lib/types';
 import { IMAGE_STYLE_SUFFIXES } from '@/lib/types';
 import { defaultConfig } from '@/lib/config';
 import { planCameraDirections, deriveCompositionHint } from '@/lib/camera-director';
@@ -125,45 +125,89 @@ export async function POST(req: Request) {
       }
     }
 
-    // Generate images in batches to avoid Gemini rate limits
-    const BATCH_SIZE = 4;
-    const imageResults: PromiseSettledResult<string>[] = [];
+    // Detect story mode: use multi-turn chat for visual consistency
+    const isStoryMode = !!(script.characterGuide || script.environmentGuide);
 
-    for (let b = 0; b < imageTasks.length; b += BATCH_SIZE) {
-      const batch = imageTasks.slice(b, b + BATCH_SIZE);
-      const batchResults = await Promise.allSettled(
-        batch.map((task) => generateImage(task.prompt, task.jobId))
-      );
-      imageResults.push(...batchResults);
-      // Brief delay between batches to stay within Gemini rate limits
-      if (b + BATCH_SIZE < imageTasks.length) {
-        await new Promise((r) => setTimeout(r, 2000));
+    if (isStoryMode) {
+      // Story mode: sequential chat-based generation for storyboard consistency
+      const storyContext = [
+        script.characterGuide ? `Characters: ${script.characterGuide}` : '',
+        script.environmentGuide ? `Environment: ${script.environmentGuide}` : '',
+        `Visual style: ${styleSuffix}`,
+      ].filter(Boolean).join('\n');
+
+      // Build a numbered story outline so the model understands the full arc
+      // and can position each frame correctly within the progression
+      const storyOutline = script.scenes.map((s, idx) => {
+        const sceneLabel = s.type === 'hook' ? 'Opening' : s.type === 'cta' ? 'Ending' : `Scene ${idx}`;
+        return `${idx + 1}. [${sceneLabel}] ${s.textOverlay}: ${s.narration}`;
+      }).join('\n');
+
+      const storyboardResults = await generateStoryboard(imageTasks, storyContext, storyOutline);
+
+      for (const task of imageTasks) {
+        const url = storyboardResults.get(task.jobId);
+        if (url) {
+          jobs.push({
+            id: task.jobId,
+            sceneId: task.sceneId,
+            type: 'image',
+            requestId: '',
+            status: 'done',
+            resultUrl: url,
+          });
+        } else {
+          errors.push(`${task.jobId}: Storyboard generation failed`);
+          jobs.push({
+            id: task.jobId,
+            sceneId: task.sceneId,
+            type: 'image',
+            requestId: '',
+            status: 'failed',
+          });
+        }
       }
-    }
+    } else {
+      // Business mode: parallel batch generation (unchanged)
+      const BATCH_SIZE = 4;
+      const imageResults: PromiseSettledResult<string>[] = [];
 
-    for (let i = 0; i < imageTasks.length; i++) {
-      const task = imageTasks[i];
-      const result = imageResults[i];
+      for (let b = 0; b < imageTasks.length; b += BATCH_SIZE) {
+        const batch = imageTasks.slice(b, b + BATCH_SIZE);
+        const batchResults = await Promise.allSettled(
+          batch.map((task) => generateImage(task.prompt, task.jobId))
+        );
+        imageResults.push(...batchResults);
+        // Brief delay between batches to stay within Gemini rate limits
+        if (b + BATCH_SIZE < imageTasks.length) {
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
 
-      if (result.status === 'fulfilled') {
-        jobs.push({
-          id: task.jobId,
-          sceneId: task.sceneId,
-          type: 'image',
-          requestId: '',
-          status: 'done',
-          resultUrl: result.value,
-        });
-      } else {
-        const msg = result.reason instanceof Error ? result.reason.message : 'Image generation failed';
-        errors.push(`${task.jobId}: ${msg}`);
-        jobs.push({
-          id: task.jobId,
-          sceneId: task.sceneId,
-          type: 'image',
-          requestId: '',
-          status: 'failed',
-        });
+      for (let i = 0; i < imageTasks.length; i++) {
+        const task = imageTasks[i];
+        const result = imageResults[i];
+
+        if (result.status === 'fulfilled') {
+          jobs.push({
+            id: task.jobId,
+            sceneId: task.sceneId,
+            type: 'image',
+            requestId: '',
+            status: 'done',
+            resultUrl: result.value,
+          });
+        } else {
+          const msg = result.reason instanceof Error ? result.reason.message : 'Image generation failed';
+          errors.push(`${task.jobId}: ${msg}`);
+          jobs.push({
+            id: task.jobId,
+            sceneId: task.sceneId,
+            type: 'image',
+            requestId: '',
+            status: 'failed',
+          });
+        }
       }
     }
 
