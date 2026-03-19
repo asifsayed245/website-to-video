@@ -43,7 +43,7 @@ export function ProgressTracker({ currentStep, videoMode = 'clips' }: ProgressTr
                     />
                   )}
                   <div
-                    className={`relative w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold transition-all duration-300 ${
+                    className={`relative w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold transition-all duration-300 ${
                       isCompleted
                         ? 'bg-emerald-500/80 text-white shadow-sm shadow-emerald-500/30'
                         : isActive
@@ -52,8 +52,8 @@ export function ProgressTracker({ currentStep, videoMode = 'clips' }: ProgressTr
                     }`}
                   >
                     {isCompleted ? (
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                      <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                       </svg>
                     ) : (
                       i + 1
@@ -61,7 +61,7 @@ export function ProgressTracker({ currentStep, videoMode = 'clips' }: ProgressTr
                   </div>
                 </div>
                 <span
-                  className={`mt-1.5 text-[10px] font-medium transition-colors ${
+                  className={`mt-1.5 text-xs font-bold transition-colors ${
                     isActive ? 'text-warm-800' : isCompleted ? 'text-warm-600' : 'text-warm-600'
                   }`}
                 >

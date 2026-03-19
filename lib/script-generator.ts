@@ -182,11 +182,6 @@ function generateStoryScript(content: StructuredContent, targetDuration: number 
     'zoom_in', 'ken_burns_right', 'ken_burns_left', 'zoom_out', 'ken_burns_right', 'zoom_in',
   ];
 
-  // Word budget for the target duration
-  const voiceLangForBudget = scriptLanguage === 'english' ? 'en-us' : 'hi';
-  const speechRate = defaultConfig.voice.speechRate[voiceLangForBudget] || 2.5;
-  const maxWords = Math.floor(targetDuration * speechRate * defaultConfig.voice.speed);
-
   // Consistency prefixes — character appearance + environment/setting
   const charPrefix = content.characterGuide
     ? `Characters in this scene: ${content.characterGuide}. `
@@ -196,27 +191,16 @@ function generateStoryScript(content: StructuredContent, targetDuration: number 
     : '';
   const consistencyPrefix = envPrefix + charPrefix;
 
-  let runningWords = 0;
   let prevStoryShot: ShotDesign | undefined;
 
-  // First pass: determine how many beats we'll include (for shot design decisions)
-  let totalBeats = 0;
-  {
-    let tempWords = 0;
-    for (let i = 0; i < content.keyPoints.length; i++) {
-      const w = wordCount(content.keyPoints[i].detail);
-      if (i >= 3 && tempWords + w > maxWords) break;
-      tempWords += w;
-      totalBeats++;
-    }
-  }
+  // Include ALL beats from Gemini — the research prompt already constrains total
+  // words to match the target duration. Never truncate: the complete story arc
+  // (beginning, middle, end) must always be preserved.
+  const totalBeats = content.keyPoints.length;
 
   for (let i = 0; i < content.keyPoints.length; i++) {
     const beat = content.keyPoints[i];
     const words = wordCount(beat.detail);
-
-    // Stop adding beats if we'd exceed the word budget (but always include at least 3)
-    if (i >= 3 && runningWords + words > maxWords) break;
 
     // Map dialogue from keyPoint if audioMode supports it
     const sceneDialogue = (audioMode === 'dialogue' || audioMode === 'both') && beat.dialogue?.length
@@ -244,7 +228,6 @@ function generateStoryScript(content: StructuredContent, targetDuration: number 
       dialogue: sceneDialogue,
       shotDesign: shot,
     });
-    runningWords += words;
   }
 
   // Fix up first/last scene types

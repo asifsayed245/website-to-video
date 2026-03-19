@@ -203,6 +203,39 @@ export async function POST(req: Request) {
       };
     });
 
+    // Clean up old generated files to prevent Remotion from copying hundreds of MBs
+    // of stale assets. Only keep files referenced in the current render.
+    const currentFiles = new Set<string>();
+    for (const s of scenesWithAssets) {
+      for (const url of [s.imageUrl, ...(s.imageUrls || []), s.videoUrl, ...(s.videoUrls || [])]) {
+        if (url) {
+          const filename = url.split('/').pop();
+          if (filename) currentFiles.add(filename);
+        }
+      }
+    }
+    if (localAudioUrl) {
+      const audioFilename = localAudioUrl.split('/').pop();
+      if (audioFilename) currentFiles.add(audioFilename);
+    }
+    for (const url of Object.values(localDialogueAudioUrls)) {
+      const fn = url.split('/').pop();
+      if (fn) currentFiles.add(fn);
+    }
+    try {
+      const allGenerated = fs.readdirSync(generatedDir);
+      let removedCount = 0;
+      for (const f of allGenerated) {
+        if (!currentFiles.has(f)) {
+          fs.unlinkSync(path.join(generatedDir, f));
+          removedCount++;
+        }
+      }
+      if (removedCount > 0) console.log(`[render] Cleaned up ${removedCount} old generated files`);
+    } catch (cleanupErr) {
+      console.warn('[render] Cleanup warning:', cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
+    }
+
     const formatsToRender: VideoFormat[] = format === 'all'
       ? FORMAT_KEYS
       : [format as VideoFormat];
@@ -241,12 +274,12 @@ export async function POST(req: Request) {
       fs.writeFileSync(propsFile, JSON.stringify(propsData));
 
       console.log(`[render:${fmt}] Audio: ${propsData.audioUrl ? (propsData.audioUrl.startsWith('/') ? 'local' : 'REMOTE') : 'none'}`);
-      const cmd = `npx remotion render "${entryPoint}" ${compositionId} "${outputPath}" --props="${propsFile}"`;
+      const cmd = `npx remotion render "${entryPoint}" ${compositionId} "${outputPath}" --props="${propsFile}" --concurrency=4`;
 
       try {
         const { stderr } = await execAsync(cmd, {
           cwd: projectRoot,
-          timeout: 600000,
+          timeout: 1800000,
           maxBuffer: 10 * 1024 * 1024,
         });
         files.push(outputFile);

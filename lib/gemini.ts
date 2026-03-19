@@ -184,15 +184,15 @@ export async function researchStoryWithGemini(
     : durationSec <= 120 ? '6 to 10'
     : '10 to 18';
 
-  // Calculate target word count from speech rate config
-  const lang = defaultConfig.voice.lang;
+  // Calculate target word count from speech rate config (use actual script language)
+  const lang = scriptLanguage === 'english' ? 'en-us' : 'hi';
   const speechRate = defaultConfig.voice.speechRate[lang] || 2.5;
   const totalTargetWords = Math.round(durationSec * speechRate * defaultConfig.voice.speed);
-  // Per-beat word range
+  // Per-beat word range — wide to let Gemini write natural, complete sentences
   const midBeatCount = durationSec <= 30 ? 4 : durationSec <= 60 ? 5 : durationSec <= 120 ? 8 : 14;
   const wordsPerBeat = Math.round(totalTargetWords / midBeatCount);
-  const minBeatWords = Math.max(15, wordsPerBeat - 5);
-  const maxBeatWords = wordsPerBeat + 10;
+  const minBeatWords = Math.max(15, wordsPerBeat - 15);
+  const maxBeatWords = wordsPerBeat + 20;
 
   const prompt = `You are a creative storyteller. Write a short, compelling story about "${topic}".${themesHint}
 Target audience: ${targetAudience}
@@ -213,7 +213,7 @@ Return a JSON object with EXACTLY this structure (no markdown, no code fences, j
   "keyPoints": [
     {
       "heading": "Short scene title (3-6 words, e.g. 'A Fateful Discovery')",
-      "detail": "1-3 sentences of narration for this scene. Written in storytelling voice, vivid and engaging. MUST be ${minBeatWords}-${maxBeatWords} words.",
+      "detail": "1-3 complete spoken sentences of narration for this scene. Written in storytelling voice, vivid and engaging. Approximately ${minBeatWords}-${maxBeatWords} words.",
       "emotionalTone": "curiosity",${getImagePromptSchema(scriptLanguage)}${getDialogueSchema(audioMode)}
       "setting": "Specific location within the story world for this scene. Example: 'The back corner of the bookshop near the stained glass window' or 'The cobblestone alley just outside the bookshop door'. Must be consistent with the environmentGuide."
     }
@@ -223,9 +223,11 @@ Return a JSON object with EXACTLY this structure (no markdown, no code fences, j
 
 IMPORTANT RULES:
 - emotionalTone must be one of: excitement, trust, confidence, curiosity, urgency
-- CRITICAL: Each beat's detail MUST be ${minBeatWords}-${maxBeatWords} words. The total narration across ALL beats must add up to approximately ${totalTargetWords} words. This is essential for matching the ${durationLabel} target duration. Do NOT write less.
+- CRITICAL: The TOTAL narration across ALL beats must add up to approximately ${totalTargetWords} words. This is essential for matching the ${durationLabel} target duration. Do NOT write less.
+- Each beat should be approximately ${minBeatWords}-${maxBeatWords} words, but this is flexible — some beats can be shorter or longer as long as the total is correct
+- NEVER cut a sentence mid-way. Every sentence must be grammatically complete
 - The first beat should set the scene / introduce the situation (like a story hook)
-- The last beat should provide resolution or a thought-provoking ending
+- The last beat MUST provide resolution or a thought-provoking ending — never leave the story incomplete
 - Each beat's detail is narration — write it to be SPOKEN ALOUD, not read
 - Make the story vivid and visual — each scene should paint a mental picture
 - Do NOT include a CTA — this is a narrative, not a sales pitch
@@ -319,19 +321,37 @@ export async function enrichScrapedContent(
   const totalTargetWords = Math.round(durationSec * speechRate * defaultConfig.voice.speed);
   const durationLabel = durationSec < 60 ? `${durationSec} seconds` : `${Math.round(durationSec / 60)} minute${durationSec > 60 ? 's' : ''}`;
 
-  const idealPointCount = durationSec <= 30 ? 3 : durationSec <= 60 ? 5 : durationSec <= 120 ? 7 : 12;
-  const wordsPerPoint = Math.round(totalTargetWords / idealPointCount);
-  const minWords = Math.max(15, wordsPerPoint - 5);
-  const maxWords = wordsPerPoint + 10;
+  let idealPointCount = durationSec <= 30 ? 3 : durationSec <= 60 ? 5 : durationSec <= 120 ? 7 : 12;
 
-  const existingContent = content.keyPoints
-    .map((kp, i) => `${i + 1}. "${kp.heading}": ${kp.detail}`)
-    .join('\n');
+  // When raw text is available (PDF uploads), add more beats to cover all content.
+  // Each extra ~100 source words beyond the target budget gets roughly 1 extra beat.
+  if (content.rawText) {
+    const sourceWords = wordCount(content.rawText);
+    const extraBeats = Math.floor(Math.max(0, sourceWords - totalTargetWords) / 100);
+    idealPointCount = Math.min(18, idealPointCount + extraBeats);
+  }
+
+  const wordsPerPoint = Math.round(totalTargetWords / idealPointCount);
+  // Wide per-beat range — lets Gemini write natural, complete sentences
+  const minWords = Math.max(15, wordsPerPoint - 15);
+  const maxWords = wordsPerPoint + 20;
+
+  // When rawText is available (PDF uploads), use ONLY the full text as the source.
+  // Don't mix truncated keyPoints with rawText — it confuses Gemini and produces
+  // broken narrations (mid-sentence starts, copied fragments).
+  const existingContent = content.rawText
+    ? ''
+    : content.keyPoints
+        .map((kp, i) => `${i + 1}. "${kp.heading}": ${kp.detail}`)
+        .join('\n');
+  const fullSourceText = content.rawText
+    ? `\nSOURCE TEXT (this is the complete content — retell ALL of it):\n${content.rawText}`
+    : '';
 
   const validTones: KeyPoint['emotionalTone'][] = ['excitement', 'trust', 'confidence', 'curiosity', 'urgency'];
 
   if (contentStyle === 'story') {
-    return enrichAsStory(model, content, existingContent, {
+    return enrichAsStory(model, content, existingContent, fullSourceText, {
       durationLabel, totalTargetWords, idealPointCount, minWords, maxWords,
     }, scriptLanguage, audioMode);
   }
@@ -343,7 +363,7 @@ Title: ${content.title}
 Description: ${content.description}
 Key points extracted:
 ${existingContent}
-Themes: ${content.themes.join(', ')}
+Themes: ${content.themes.join(', ')}${fullSourceText}
 
 PROBLEM: This content is too thin for a ${durationLabel} video. It only has ~${density.totalWords} words of narration but needs ~${totalTargetWords} words.
 
@@ -417,21 +437,20 @@ async function enrichAsStory(
   model: ReturnType<GoogleGenerativeAI['getGenerativeModel']>,
   content: StructuredContent,
   existingContent: string,
+  fullSourceText: string,
   targets: { durationLabel: string; totalTargetWords: number; idealPointCount: number; minWords: number; maxWords: number },
   scriptLanguage?: ScriptLanguage,
   audioMode?: AudioMode,
 ): Promise<StructuredContent> {
   const validTones: KeyPoint['emotionalTone'][] = ['excitement', 'trust', 'confidence', 'curiosity', 'urgency'];
 
-  const prompt = `You are a creative storyteller. Transform thin website content into a compelling narrated story.
+  const prompt = `You are a creative storyteller. Transform the provided content into a compelling narrated story for a ${targets.durationLabel} video.
 
-ORIGINAL WEBSITE CONTENT (from "${content.title}"):
+ORIGINAL CONTENT (from "${content.title}"):
 ${existingContent}
-Themes: ${content.themes.join(', ')}
+Themes: ${content.themes.join(', ')}${fullSourceText}
 
-PROBLEM: This content is too thin for a ${targets.durationLabel} narrated video. It needs ~${targets.totalTargetWords} words of narration.
-
-YOUR TASK: Using "${content.title}" as inspiration, create a vivid short story suitable for a ${targets.durationLabel} narrated video.
+YOUR TASK: Retell the ENTIRE source material as a vivid, cinematic story in approximately ${targets.totalTargetWords} words across ${targets.idealPointCount} scene beats. Every major plot point, event, lesson, moral, and conclusion from the source MUST be included — nothing should be left out.
 
 Return a JSON object with EXACTLY this structure (no markdown, no code fences, just raw JSON):
 
@@ -444,7 +463,7 @@ Return a JSON object with EXACTLY this structure (no markdown, no code fences, j
   "keyPoints": [
     {
       "heading": "Short scene title (3-6 words)",
-      "detail": "1-3 sentences of narration. MUST be ${targets.minWords}-${targets.maxWords} words.",
+      "detail": "1-3 complete spoken sentences of narration, approximately ${targets.minWords}-${targets.maxWords} words.",
       "emotionalTone": "curiosity",${getImagePromptSchema(scriptLanguage)}${getDialogueSchema(audioMode)}
       "setting": "Specific location within the story world"
     }
@@ -454,11 +473,13 @@ Return a JSON object with EXACTLY this structure (no markdown, no code fences, j
 
 CRITICAL RULES:
 - emotionalTone must be one of: excitement, trust, confidence, curiosity, urgency
-- You MUST produce exactly ${targets.idealPointCount} scene beats
-- Each beat MUST be ${targets.minWords}-${targets.maxWords} words. Count every word.
-- Total narration must be approximately ${targets.totalTargetWords} words
-- Write as spoken-aloud narration — vivid, cinematic
-- First beat: set the scene. Last beat: resolution or thought-provoking ending
+- Produce ${targets.idealPointCount} scene beats (you may add 1-2 extra if needed to cover all content)
+- TOTAL narration across ALL beats must be approximately ${targets.totalTargetWords} words
+- Each beat should be approximately ${targets.minWords}-${targets.maxWords} words, but this is flexible — some beats can be shorter or longer as long as the total is correct
+- NEVER cut a sentence mid-way. Every sentence must be grammatically complete
+- Write as spoken-aloud narration — vivid, cinematic, meant to be heard not read
+- First beat: set the scene. Last beat: resolution, moral, or thought-provoking ending
+- MOST IMPORTANT: The ENTIRE source story must be covered from beginning to end. If the source includes a moral, lesson, conclusion, or ending — it MUST appear in the final beat(s). It is better to slightly exceed the word target than to omit any part of the story
 - All scenes should use the SAME or closely related locations
 - Return ONLY valid JSON, no other text`;
 
@@ -521,15 +542,15 @@ export async function extractPDFWithVision(
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
   const durationSec = targetDuration;
-  const lang = defaultConfig.voice.lang;
+  const lang = scriptLanguage === 'english' ? 'en-us' : 'hi';
   const speechRate = defaultConfig.voice.speechRate[lang] || 2.5;
   const totalTargetWords = Math.round(durationSec * speechRate * defaultConfig.voice.speed);
   const durationLabel = durationSec < 60 ? `${durationSec} seconds` : `${Math.round(durationSec / 60)} minute${durationSec > 60 ? 's' : ''}`;
 
   const idealPointCount = durationSec <= 30 ? 3 : durationSec <= 60 ? 5 : durationSec <= 120 ? 7 : 12;
   const wordsPerPoint = Math.round(totalTargetWords / idealPointCount);
-  const minWords = Math.max(15, wordsPerPoint - 5);
-  const maxWords = wordsPerPoint + 10;
+  const minWords = Math.max(15, wordsPerPoint - 15);
+  const maxWords = wordsPerPoint + 20;
 
   const validTones: KeyPoint['emotionalTone'][] = ['excitement', 'trust', 'confidence', 'curiosity', 'urgency'];
 

@@ -35,7 +35,7 @@ export async function parsePDF(
 
   // Extract description: first substantial paragraph (not the title)
   const description =
-    paragraphs.find((p) => p !== title && p.length > 40)?.slice(0, 250) || '';
+    paragraphs.find((p) => p !== title && p.length > 40)?.slice(0, 500) || '';
 
   // Identify headings: short lines (<100 chars) that aren't just numbers
   // and are followed by longer content
@@ -60,21 +60,21 @@ export async function parsePDF(
   const keyPoints: KeyPoint[] = [];
 
   if (headings.length > 0) {
-    for (let i = 0; i < Math.min(headings.length, 5); i++) {
+    for (let i = 0; i < Math.min(headings.length, 10); i++) {
       const heading = headings[i];
-      // Find a paragraph that relates to this heading
+      // Find the paragraph that follows this heading (don't strip heading —
+      // stripping creates mid-sentence starts like "is a fable..." instead of
+      // "The Tortoise is a fable..."). Keep the full paragraph as detail.
       const related = paragraphs.find(
         (p) =>
           p.includes(heading) ||
           paragraphs.indexOf(p) === i
       );
-      const detail = related
-        ? related.replace(heading, '').trim().slice(0, 250)
-        : paragraphs[i]?.slice(0, 250) || '';
+      const detail = related?.slice(0, 800) || paragraphs[i]?.slice(0, 800) || '';
 
       if (detail.length > 10) {
         keyPoints.push({
-          heading: heading.slice(0, 60),
+          heading: heading.slice(0, 80),
           detail,
           emotionalTone: tones[keyPoints.length % tones.length],
         });
@@ -84,11 +84,11 @@ export async function parsePDF(
 
   // Fallback: if no heading-based points, use paragraphs directly
   if (keyPoints.length === 0) {
-    for (let i = 0; i < Math.min(paragraphs.length, 4); i++) {
+    for (let i = 0; i < Math.min(paragraphs.length, 10); i++) {
       const p = paragraphs[i];
       keyPoints.push({
-        heading: p.slice(0, 50) + (p.length > 50 ? '...' : ''),
-        detail: p.slice(0, 250),
+        heading: p.slice(0, 60) + (p.length > 60 ? '...' : ''),
+        detail: p.slice(0, 800),
         emotionalTone: tones[i % tones.length],
       });
     }
@@ -97,8 +97,8 @@ export async function parsePDF(
   // Ensure at least 1 key point
   if (keyPoints.length === 0) {
     keyPoints.push({
-      heading: title.slice(0, 50),
-      detail: rawText.slice(0, 250),
+      heading: title.slice(0, 60),
+      detail: rawText.slice(0, 800),
       emotionalTone: 'curiosity',
     });
   }
@@ -128,5 +128,7 @@ export async function parsePDF(
     themes,
     keyPoints,
     targetAudience,
+    // Preserve full text so Gemini enrichment can see complete content
+    rawText: rawText.slice(0, 16000),
   };
 }

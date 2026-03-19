@@ -61,11 +61,11 @@ const SIZE_LABELS: Record<ShotSize, string> = {
 
 // ── Content analysis patterns ──
 
-const INTIMATE_PATTERN = /whisper|secret|confess|tears|cry|emotion|feel|heart|love|grief|sorrow|regret|longing/i;
-const ACTION_PATTERN = /run|fight|chase|escape|journey|travel|walk|arrive|battle|attack|defend|crash|explode/i;
+export const INTIMATE_PATTERN = /whisper|secret|confess|tears|cry|emotion|feel|heart|love|grief|sorrow|regret|longing/i;
+export const ACTION_PATTERN = /run|fight|chase|escape|journey|travel|walk|arrive|battle|attack|defend|crash|explode/i;
 const POWER_PATTERN = /power|authority|command|leader|king|queen|ruler|conquer|dominate|triumph|victory/i;
 const VULNERABLE_PATTERN = /vulnerable|weak|helpless|lost|afraid|scared|trapped|alone|abandoned|broken/i;
-const TENSION_PATTERN = /tension|suspense|danger|threat|risk|countdown|ticking|urgent|deadline|crisis/i;
+export const TENSION_PATTERN = /tension|suspense|danger|threat|risk|countdown|ticking|urgent|deadline|crisis/i;
 
 /**
  * Design a professional cinematographic shot for a scene.

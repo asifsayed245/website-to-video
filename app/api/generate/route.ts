@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
 import { submitAudioJob } from '@/lib/deapi';
 import { generateImage, generateStoryboard } from '@/lib/gemini-image';
-import type { VideoScript, AssetJob } from '@/lib/types';
+import type { VideoScript, AssetJob, Scene } from '@/lib/types';
 import { IMAGE_STYLE_SUFFIXES } from '@/lib/types';
 import { defaultConfig } from '@/lib/config';
 import { planCameraDirections, deriveCompositionHint } from '@/lib/camera-director';
-import { getSubShot } from '@/lib/cinema-director';
+import { getSubShot, ACTION_PATTERN, INTIMATE_PATTERN, TENSION_PATTERN } from '@/lib/cinema-director';
 
 /**
  * Split narration into roughly equal sentence groups for sub-image prompts.
@@ -49,6 +49,47 @@ function buildNarrationFocus(segment: string, fullNarration: string): string {
   return ` Focusing on this specific moment: "${context}".`;
 }
 
+/**
+ * Intelligently determine how many images a scene needs based on its content.
+ * Action-heavy scenes get more images (fast cuts), emotional scenes get fewer
+ * (lingering shots). In clips mode, enforces a minimum floor so total clip
+ * duration covers the scene.
+ */
+function planSceneImageCount(
+  scene: Scene,
+  clipDuration: number | null, // null = images mode, number = clips mode (seconds per clip)
+): number {
+  const narration = scene.narration;
+
+  // 1. Determine base pacing tier (seconds per image)
+  let secsPerImage = 5.5; // default
+  if (ACTION_PATTERN.test(narration))       secsPerImage = 3.5;
+  else if (TENSION_PATTERN.test(narration)) secsPerImage = 4.0;
+  else if (scene.dialogue && scene.dialogue.length > 0) secsPerImage = 4.0;
+  else if (INTIMATE_PATTERN.test(narration)) secsPerImage = 7.0;
+
+  // 2. Scene type modifier: hooks need attention, CTAs are conclusive
+  if (scene.type === 'hook') secsPerImage *= 0.9;
+  else if (scene.type === 'cta') secsPerImage *= 1.1;
+
+  // 3. Sentence density bonus: more sentences = more distinct moments to show
+  const sentences = narration.split(/[.!?]+/).filter((s) => s.trim().length > 0).length;
+  const expectedSentences = Math.round(scene.durationSeconds / 4); // ~1 sentence per 4s typical
+  const densityBonus = sentences > expectedSentences + 1 ? 1 : 0;
+
+  // 4. Calculate image count
+  let count = Math.ceil(scene.durationSeconds / secsPerImage) + densityBonus;
+
+  // 5. Clips mode floor: enough clips to cover scene duration
+  if (clipDuration !== null) {
+    const minForClips = Math.ceil(scene.durationSeconds / clipDuration);
+    count = Math.max(count, minForClips);
+  }
+
+  // 6. Bounds
+  return Math.max(1, Math.min(count, 10));
+}
+
 interface ImageTask {
   jobId: string;
   sceneId: string;
@@ -60,7 +101,6 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const script: VideoScript = body;
-    const targetDuration: number = body.targetDuration || 60;
 
     if (!script.scenes || script.scenes.length === 0) {
       return NextResponse.json({ error: 'No scenes in script' }, { status: 400 });
@@ -79,14 +119,16 @@ export async function POST(req: Request) {
     const cameraDirections = planCameraDirections(script);
     const cameraByScene = new Map(cameraDirections.map((cd) => [cd.sceneId, cd]));
 
-    // Build all image tasks: ~1 image per N seconds of scene duration
-    // Under 1 min: 1 image per 3.5s (more visual density for short videos)
-    // 1 min and above: 1 image per 5s
-    const imageInterval = targetDuration >= 60 ? 5 : 3.5;
+    // Build image tasks with intelligent per-scene pacing.
+    // Action scenes get more images (fast cuts), emotional scenes fewer (lingering shots).
+    // In clips mode, enforces a minimum so clip duration covers each scene.
+    const clipDuration = script.clipModel
+      ? parseFloat(script.clipDuration || '5')
+      : null;
     const imageTasks: ImageTask[] = [];
 
     for (const scene of script.scenes) {
-      const imageCount = Math.max(1, Math.ceil(scene.durationSeconds / imageInterval));
+      const imageCount = planSceneImageCount(scene, clipDuration);
 
       // Get composition hint from planned camera movement
       const cam = cameraByScene.get(scene.id);

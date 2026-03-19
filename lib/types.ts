@@ -129,6 +129,8 @@ export interface StructuredContent {
   cta?: { text: string; url?: string };
   characterGuide?: string;
   environmentGuide?: string;
+  /** Full raw text from uploaded PDF — passed to Gemini for complete content coverage. */
+  rawText?: string;
 }
 
 export interface KeyPoint {
