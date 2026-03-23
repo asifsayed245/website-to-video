@@ -6,6 +6,16 @@ const nextConfig = {
     }
     return config;
   },
+  api: {
+    bodyParser: {
+      sizeLimit: '30mb',
+    },
+  },
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '30mb',
+    },
+  },
 };
 
 module.exports = nextConfig;

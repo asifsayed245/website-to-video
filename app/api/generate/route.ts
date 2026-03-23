@@ -185,7 +185,7 @@ export async function POST(req: Request) {
         return `${idx + 1}. [${sceneLabel}] ${s.textOverlay}: ${s.narration}`;
       }).join('\n');
 
-      const storyboardResults = await generateStoryboard(imageTasks, storyContext, storyOutline);
+      const storyboardResults = await generateStoryboard(imageTasks, storyContext, storyOutline, '16:9', script.referenceImages);
 
       for (const task of imageTasks) {
         const url = storyboardResults.get(task.jobId);
@@ -217,7 +217,7 @@ export async function POST(req: Request) {
       for (let b = 0; b < imageTasks.length; b += BATCH_SIZE) {
         const batch = imageTasks.slice(b, b + BATCH_SIZE);
         const batchResults = await Promise.allSettled(
-          batch.map((task) => generateImage(task.prompt, task.jobId))
+          batch.map((task) => generateImage(task.prompt, task.jobId, '16:9', script.referenceImages))
         );
         imageResults.push(...batchResults);
         // Brief delay between batches to stay within Gemini rate limits

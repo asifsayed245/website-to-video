@@ -2,7 +2,66 @@
 
 import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  rectSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { PLATFORMS, type AssetJob, type VideoFormat, type RenderFormat } from '@/lib/types';
+import { ImageLightbox } from './ImageLightbox';
+
+function SortableAssetImage({ job, onClick }: { job: AssetJob; onClick?: () => void }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: job.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 10 : undefined,
+    opacity: isDragging ? 0.7 : 1,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="aspect-video rounded-lg overflow-hidden border border-warm-200/40 hover:border-accent/50 hover:ring-2 hover:ring-accent/30 transition cursor-pointer relative group"
+      onClick={onClick}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={job.resultUrl} alt={job.sceneId} className="w-full h-full object-cover" />
+      {/* Drag handle */}
+      <div
+        {...attributes}
+        {...listeners}
+        className="absolute top-1 left-1 w-5 h-5 rounded bg-black/40 backdrop-blur-sm flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <svg className="w-3 h-3 text-white" viewBox="0 0 16 16" fill="currentColor">
+          <circle cx="5" cy="3" r="1.5" /><circle cx="11" cy="3" r="1.5" />
+          <circle cx="5" cy="8" r="1.5" /><circle cx="11" cy="8" r="1.5" />
+          <circle cx="5" cy="13" r="1.5" /><circle cx="11" cy="13" r="1.5" />
+        </svg>
+      </div>
+    </div>
+  );
+}
 
 interface DownloadPanelProps {
   jobs: AssetJob[];
@@ -10,6 +69,9 @@ interface DownloadPanelProps {
   onRender: (format: RenderFormat) => void;
   rendering: boolean;
   renderFiles?: string[];
+  onRegenerateImage?: (job: AssetJob, description: string) => void;
+  isRegenerating?: boolean;
+  onJobsReorder?: (reorderedJobs: AssetJob[]) => void;
 }
 
 const FORMAT_BUTTONS = (Object.keys(PLATFORMS) as VideoFormat[]).map((key) => ({
@@ -30,7 +92,7 @@ function getVideoLabel(file: string): string {
   return file;
 }
 
-export function DownloadPanel({ jobs, clipJobs = [], onRender, rendering, renderFiles = [] }: DownloadPanelProps) {
+export function DownloadPanel({ jobs, clipJobs = [], onRender, rendering, renderFiles = [], onRegenerateImage, isRegenerating, onJobsReorder }: DownloadPanelProps) {
   const { completedImages, completedAudio, completedClips, failedJobs } = useMemo(() => ({
     completedImages: jobs.filter((j) => j.type === 'image' && j.status === 'done'),
     completedAudio: jobs.filter((j) => j.type === 'audio' && j.status === 'done'),
@@ -40,6 +102,12 @@ export function DownloadPanel({ jobs, clipJobs = [], onRender, rendering, render
   const hasAssets = completedImages.length > 0 || completedAudio.length > 0;
   const [showAssets, setShowAssets] = useState(false);
   const [activeVideo, setActiveVideo] = useState<string | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor),
+  );
 
   const videoFiles = renderFiles.filter((f) => f.endsWith('.mp4'));
   const previewFile = activeVideo || (videoFiles.length > 0 ? videoFiles[0] : null);
@@ -190,21 +258,42 @@ export function DownloadPanel({ jobs, clipJobs = [], onRender, rendering, render
             <div className="mt-3 space-y-3">
               {completedImages.length > 0 && (
                 <div>
-                  <h4 className="text-xs text-warm-600 mb-2 font-medium">Images</h4>
-                  <div className="grid grid-cols-5 gap-2">
-                    {completedImages.map((job) => (
-                      <a
-                        key={job.id}
-                        href={job.resultUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="aspect-video rounded-lg overflow-hidden border border-warm-200/40 hover:border-accent/50 transition"
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={job.resultUrl} alt={job.sceneId} className="w-full h-full object-cover" />
-                      </a>
-                    ))}
-                  </div>
+                  <h4 className="text-xs text-warm-600 mb-2 font-medium">
+                    Images
+                    <span className="text-warm-400 ml-1">(click to preview, drag to reorder)</span>
+                  </h4>
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={(event: DragEndEvent) => {
+                      const { active, over } = event;
+                      if (!over || active.id === over.id || !onJobsReorder) return;
+                      const oldIndex = completedImages.findIndex((j) => j.id === active.id);
+                      const newIndex = completedImages.findIndex((j) => j.id === over.id);
+                      if (oldIndex === -1 || newIndex === -1) return;
+                      // Rebuild full image job list with reorder
+                      const allImageJobs = jobs.filter((j) => j.type === 'image');
+                      const reordered = [...allImageJobs];
+                      const oldFullIndex = reordered.findIndex((j) => j.id === active.id);
+                      const newFullIndex = reordered.findIndex((j) => j.id === over.id);
+                      if (oldFullIndex === -1 || newFullIndex === -1) return;
+                      const [moved] = reordered.splice(oldFullIndex, 1);
+                      reordered.splice(newFullIndex, 0, moved);
+                      onJobsReorder(reordered);
+                    }}
+                  >
+                    <SortableContext items={completedImages.map((j) => j.id)} strategy={rectSortingStrategy}>
+                      <div className="grid grid-cols-5 gap-2">
+                        {completedImages.map((job, idx) => (
+                          <SortableAssetImage
+                            key={job.id}
+                            job={job}
+                            onClick={() => setLightboxIndex(idx)}
+                          />
+                        ))}
+                      </div>
+                    </SortableContext>
+                  </DndContext>
                 </div>
               )}
 
@@ -259,6 +348,17 @@ export function DownloadPanel({ jobs, clipJobs = [], onRender, rendering, render
           )}
         </div>
       </div>
+
+      {/* Lightbox */}
+      {lightboxIndex !== null && completedImages.length > 0 && (
+        <ImageLightbox
+          images={completedImages}
+          initialIndex={lightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+          onRegenerate={onRegenerateImage}
+          isRegenerating={isRegenerating}
+        />
+      )}
     </div>
   );
 }

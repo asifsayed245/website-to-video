@@ -14,6 +14,9 @@
     "remotion:render:all": "npm run remotion:render:reel && npm run remotion:render:linkedin && npm run remotion:render:square"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
     "@google/genai": "^1.45.0",
     "@google/generative-ai": "^0.24.1",
     "@remotion/cli": "^4.0.0",

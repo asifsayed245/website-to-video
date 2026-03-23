@@ -4,6 +4,8 @@ import { motion } from 'framer-motion';
 import type { VideoScript, Scene, ContentStyle, VideoMode, KieModel, ClipResolution, DialogueLine } from '@/lib/types';
 import { IMAGE_STYLE_OPTIONS, KIE_MODEL_OPTIONS } from '@/lib/types';
 import { wordCount } from '@/lib/utils';
+import { defaultConfig } from '@/lib/config';
+import { rebuildBrollPrompt } from '@/lib/prompt-builder';
 import { VoiceSelector } from './VoiceSelector';
 
 interface ScriptEditorProps {
@@ -123,8 +125,22 @@ export function ScriptEditor({ script, onUpdate, onConfirm, isLoading, contentSt
         ...scenes[index],
         wordCount: wordCount(String(value)),
       };
+      // Auto-update brollPrompt based on the new narration
+      const updatedScript = { ...script, scenes };
+      scenes[index] = {
+        ...scenes[index],
+        brollPrompt: rebuildBrollPrompt(scenes[index], updatedScript, contentStyle),
+      };
       const fullNarration = scenes.map((s) => s.narration).join(' ');
-      onUpdate({ ...script, scenes, fullNarration });
+      onUpdate({ ...updatedScript, scenes, fullNarration });
+    } else if (field === 'textOverlay') {
+      // Also rebuild brollPrompt when textOverlay changes
+      const updatedScript = { ...script, scenes };
+      scenes[index] = {
+        ...scenes[index],
+        brollPrompt: rebuildBrollPrompt(scenes[index], updatedScript, contentStyle),
+      };
+      onUpdate({ ...updatedScript, scenes });
     } else {
       onUpdate({ ...script, scenes });
     }
@@ -252,13 +268,53 @@ export function ScriptEditor({ script, onUpdate, onConfirm, isLoading, contentSt
                 />
               </div>
               <div>
-                <label className="block text-xs text-warm-600 mb-1">Narration</label>
-                <textarea
-                  value={scene.narration}
-                  onChange={(e) => updateScene(i, 'narration', e.target.value)}
-                  rows={2}
-                  className="glass-input w-full text-sm resize-none"
-                />
+                {(() => {
+                  const lang = script.voiceLang || 'en-us';
+                  const rate = defaultConfig.voice.speechRate[lang] || 2.8;
+                  const speed = defaultConfig.voice.speed || 1.0;
+                  const maxWords = Math.floor(scene.durationSeconds * rate * speed);
+                  const currentWords = wordCount(scene.narration);
+                  const isOverLimit = currentWords > maxWords;
+
+                  // Context drift: compare this scene's significant words with all other scenes
+                  const significantWords = (text: string) =>
+                    text.toLowerCase().split(/\s+/).filter((w) => w.length > 4);
+                  const otherWords = new Set(
+                    script.scenes
+                      .filter((_, si) => si !== i)
+                      .flatMap((s) => [
+                        ...significantWords(s.narration || ''),
+                        ...significantWords(s.textOverlay || ''),
+                      ])
+                  );
+                  const thisWords = significantWords(scene.narration || '');
+                  const overlap = thisWords.filter((w) => otherWords.has(w)).length;
+                  const overlapRatio = thisWords.length > 0 ? overlap / thisWords.length : 1;
+                  const isOffTopic = thisWords.length > 10 && overlapRatio < 0.05;
+
+                  return (
+                    <>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs text-warm-600">Narration</label>
+                        <span className={`text-xs font-mono ${isOverLimit ? 'text-red-500 font-semibold' : 'text-warm-600'}`}>
+                          {currentWords} / {maxWords} words
+                        </span>
+                      </div>
+                      <textarea
+                        value={scene.narration}
+                        onChange={(e) => updateScene(i, 'narration', e.target.value)}
+                        rows={2}
+                        className={`glass-input w-full text-sm resize-none ${isOverLimit ? 'border-red-400/60 ring-1 ring-red-400/30' : ''}`}
+                      />
+                      {isOverLimit && (
+                        <p className="mt-0.5 text-xs text-red-500">Narration exceeds recommended word limit for this scene&apos;s duration</p>
+                      )}
+                      {isOffTopic && (
+                        <p className="mt-0.5 text-xs text-amber-600">This narration may be off-topic from the rest of the script</p>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
               {/* Dialogue lines (shown when dialogue exists) */}
               {scene.dialogue && scene.dialogue.length > 0 && (
@@ -289,12 +345,12 @@ export function ScriptEditor({ script, onUpdate, onConfirm, isLoading, contentSt
                 </div>
               )}
               <div>
-                <label className="block text-xs text-warm-600 mb-1">B-Roll Image Prompt</label>
+                <label className="block text-xs text-warm-600 mb-1">B-Roll Image Prompt (auto-generated)</label>
                 <textarea
                   value={scene.brollPrompt}
-                  onChange={(e) => updateScene(i, 'brollPrompt', e.target.value)}
+                  readOnly
                   rows={2}
-                  className="glass-input w-full text-sm resize-none"
+                  className="glass-input w-full text-sm resize-none bg-warm-50/50 text-warm-500 cursor-not-allowed"
                 />
               </div>
             </div>

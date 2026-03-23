@@ -117,6 +117,15 @@ export interface TopicInput {
 
 export type ContentInput = URLInput | TopicInput;
 
+// ── Reference Images ──
+
+export interface ReferenceImage {
+  id: string;
+  type: 'character' | 'environment';
+  dataUrl: string;
+  filename: string;
+}
+
 // ── Scraped / Researched Content ──
 
 export interface StructuredContent {
@@ -131,6 +140,7 @@ export interface StructuredContent {
   environmentGuide?: string;
   /** Full raw text from uploaded PDF — passed to Gemini for complete content coverage. */
   rawText?: string;
+  referenceImages?: ReferenceImage[];
 }
 
 export interface KeyPoint {
@@ -161,6 +171,7 @@ export interface VideoScript {
   clipDuration?: string;
   audioMode?: AudioMode;
   characters?: CharacterVoiceMapping[];
+  referenceImages?: ReferenceImage[];
 }
 
 export interface VoiceOption {

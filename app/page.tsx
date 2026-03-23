@@ -57,6 +57,8 @@ export default function Home() {
   const [videoMode, setVideoMode] = useState<VideoMode>('clips');
   const [audioMode, setAudioMode] = useState<AudioMode>('narration');
 
+  const [isRegenerating, setIsRegenerating] = useState(false);
+
   // New state for clip generation
   const [clipJobs, setClipJobs] = useState<AssetJob[]>([]);
   const [clipPolling, setClipPolling] = useState(false);
@@ -94,6 +96,8 @@ export default function Home() {
     setContentStyle(style);
     setTargetDuration(duration);
 
+    const refImages = 'referenceImages' in data ? data.referenceImages : undefined;
+
     try {
       let contentRes: Response;
 
@@ -104,6 +108,9 @@ export default function Home() {
         formData.append('targetDuration', String(duration));
         formData.append('scriptLanguage', lang);
         formData.append('audioMode', aMode);
+        if (refImages?.length) {
+          formData.append('referenceImages', JSON.stringify(refImages));
+        }
 
         contentRes = await fetch('/api/parse-pdf', {
           method: 'POST',
@@ -112,7 +119,7 @@ export default function Home() {
       } else {
         const endpoint = data.mode === 'url' ? '/api/scrape' : '/api/research';
         const body = data.mode === 'url'
-          ? { url: data.url, targetDuration: duration, contentStyle: style, scriptLanguage: lang, audioMode: aMode }
+          ? { url: data.url, targetDuration: duration, contentStyle: style, scriptLanguage: lang, audioMode: aMode, referenceImages: refImages }
           : data;
 
         contentRes = await fetch(endpoint, {
@@ -128,6 +135,8 @@ export default function Home() {
       }
 
       const contentData: StructuredContent = await contentRes.json();
+      // Attach reference images to content so they flow through to script
+      if (refImages?.length) contentData.referenceImages = refImages;
       setContent(contentData);
 
       const scriptRes = await fetch('/api/analyze', {
@@ -142,6 +151,8 @@ export default function Home() {
       }
 
       const scriptData: VideoScript = await scriptRes.json();
+      // Carry reference images onto the script for image generation
+      if (refImages?.length) scriptData.referenceImages = refImages;
       setScript(scriptData);
       setStep('script');
     } catch (err) {
@@ -443,6 +454,62 @@ export default function Home() {
     }
   };
 
+  // Regenerate a single image
+  const handleRegenerateImage = async (job: AssetJob, description: string) => {
+    if (!script) return;
+    setIsRegenerating(true);
+    try {
+      const scene = script.scenes.find((s) => s.id === job.sceneId);
+
+      // Gather neighboring frame URLs for visual consistency context
+      const imageJobs = jobs.filter((j) => j.type === 'image' && j.status === 'done' && j.resultUrl);
+      const jobIndex = imageJobs.findIndex((j) => j.id === job.id);
+      const prevImageUrl = jobIndex > 0 ? imageJobs[jobIndex - 1].resultUrl : undefined;
+      const nextImageUrl = jobIndex < imageJobs.length - 1 ? imageJobs[jobIndex + 1].resultUrl : undefined;
+
+      const res = await fetch('/api/regenerate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobId: job.id,
+          sceneId: job.sceneId,
+          originalPrompt: scene?.brollPrompt || '',
+          changeDescription: description,
+          imageStyle: script.imageStyle,
+          imageInstruction: script.imageInstruction,
+          referenceImages: script.referenceImages,
+          characterGuide: script.characterGuide,
+          environmentGuide: script.environmentGuide,
+          neighborImageUrls: [prevImageUrl, nextImageUrl].filter(Boolean),
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as Record<string, string>).error || 'Regeneration failed');
+      }
+
+      const data = await res.json();
+      // Update the job in state with the new resultUrl
+      setJobs((prev) =>
+        prev.map((j) => j.id === job.id ? { ...j, resultUrl: data.resultUrl } : j)
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Image regeneration failed');
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  // Reorder image jobs (drag-and-drop)
+  const handleJobsReorder = (reorderedImageJobs: AssetJob[]) => {
+    // Replace image jobs while preserving audio jobs
+    setJobs((prev) => {
+      const nonImageJobs = prev.filter((j) => j.type !== 'image');
+      return [...reorderedImageJobs, ...nonImageJobs];
+    });
+  };
+
   // Reset
   const handleReset = () => {
     setStep('input');
@@ -455,6 +522,7 @@ export default function Home() {
     setPolling(false);
     setClipPolling(false);
     setRendering(false);
+    setIsRegenerating(false);
     setRenderFiles([]);
     setContentStyle('business');
     setTargetDuration(60);
@@ -532,7 +600,12 @@ export default function Home() {
 
         {/* Step 3: Asset Generation */}
         {step === 'generating' && (
-          <AssetGallery jobs={jobs} />
+          <AssetGallery
+            jobs={jobs}
+            onRegenerateImage={handleRegenerateImage}
+            isRegenerating={isRegenerating}
+            onJobsReorder={handleJobsReorder}
+          />
         )}
 
         {/* Step 3.5: Clip Generation */}
@@ -556,6 +629,9 @@ export default function Home() {
               onRender={handleRender}
               rendering={rendering}
               renderFiles={renderFiles}
+              onRegenerateImage={handleRegenerateImage}
+              isRegenerating={isRegenerating}
+              onJobsReorder={handleJobsReorder}
             />
           </div>
         )}

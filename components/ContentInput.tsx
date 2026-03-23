@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import type { ContentStyle, VideoDuration, ScriptLanguage, AudioMode, VideoMode } from '@/lib/types';
+import type { ContentStyle, VideoDuration, ScriptLanguage, AudioMode, VideoMode, ReferenceImage } from '@/lib/types';
 import { VIDEO_DURATION_OPTIONS, SCRIPT_LANGUAGE_OPTIONS, AUDIO_MODE_OPTIONS, VIDEO_MODE_OPTIONS } from '@/lib/types';
 
 interface ContentInputProps {
@@ -19,6 +19,7 @@ export interface URLData {
   targetDuration: VideoDuration;
   scriptLanguage: ScriptLanguage;
   audioMode: AudioMode;
+  referenceImages?: ReferenceImage[];
 }
 
 export interface TopicData {
@@ -28,10 +29,12 @@ export interface TopicData {
   audience: string;
   tone: 'professional' | 'casual' | 'educational' | 'inspirational';
   cta: string;
+  storyText?: string;
   contentStyle: ContentStyle;
   targetDuration: VideoDuration;
   scriptLanguage: ScriptLanguage;
   audioMode: AudioMode;
+  referenceImages?: ReferenceImage[];
 }
 
 export interface PDFData {
@@ -41,6 +44,7 @@ export interface PDFData {
   targetDuration: VideoDuration;
   scriptLanguage: ScriptLanguage;
   audioMode: AudioMode;
+  referenceImages?: ReferenceImage[];
 }
 
 export function ContentInput({ onSubmit, isLoading, videoMode, onVideoModeChange }: ContentInputProps) {
@@ -57,17 +61,57 @@ export function ContentInput({ onSubmit, isLoading, videoMode, onVideoModeChange
   const [audience, setAudience] = useState('');
   const [tone, setTone] = useState<TopicData['tone']>('professional');
   const [cta, setCta] = useState('');
+  const [storyText, setStoryText] = useState('');
+  const [characterRefs, setCharacterRefs] = useState<ReferenceImage[]>([]);
+  const [environmentRefs, setEnvironmentRefs] = useState<ReferenceImage[]>([]);
+  const [showRefImages, setShowRefImages] = useState(false);
 
   const isStory = contentStyle === 'story';
 
+  const allReferenceImages = [...characterRefs, ...environmentRefs];
+
+  const handleImageUpload = (type: 'character' | 'environment', files: FileList | null) => {
+    if (!files) return;
+    const setter = type === 'character' ? setCharacterRefs : setEnvironmentRefs;
+    const current = type === 'character' ? characterRefs : environmentRefs;
+    if (current.length >= 2) return;
+
+    const remaining = 2 - current.length;
+    const toProcess = Array.from(files).slice(0, remaining);
+
+    for (const file of toProcess) {
+      if (file.size > 5 * 1024 * 1024) {
+        alert(`${file.name} is too large (max 5MB)`);
+        continue;
+      }
+      if (!file.type.startsWith('image/')) continue;
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        setter((prev) => [
+          ...prev,
+          { id: `${type}-${Date.now()}-${Math.random().toString(36).slice(2)}`, type, dataUrl, filename: file.name },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const removeRefImage = (id: string) => {
+    setCharacterRefs((prev) => prev.filter((r) => r.id !== id));
+    setEnvironmentRefs((prev) => prev.filter((r) => r.id !== id));
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const refs = allReferenceImages.length > 0 ? allReferenceImages : undefined;
     if (activeTab === 'url') {
       if (!url.trim()) return;
-      onSubmit({ mode: 'url', url: url.trim(), contentStyle, targetDuration, scriptLanguage, audioMode });
+      onSubmit({ mode: 'url', url: url.trim(), contentStyle, targetDuration, scriptLanguage, audioMode, referenceImages: refs });
     } else if (activeTab === 'pdf') {
       if (!pdfFile) return;
-      onSubmit({ mode: 'pdf', file: pdfFile, contentStyle, targetDuration, scriptLanguage, audioMode });
+      onSubmit({ mode: 'pdf', file: pdfFile, contentStyle, targetDuration, scriptLanguage, audioMode, referenceImages: refs });
     } else {
       if (!topic.trim()) return;
       if (!isStory && !keywordsText.trim()) return;
@@ -78,10 +122,12 @@ export function ContentInput({ onSubmit, isLoading, videoMode, onVideoModeChange
         audience,
         tone,
         cta,
+        storyText: storyText.trim() || undefined,
         contentStyle,
         targetDuration,
         scriptLanguage,
         audioMode,
+        referenceImages: refs,
       });
     }
   };
@@ -251,6 +297,93 @@ export function ContentInput({ onSubmit, isLoading, videoMode, onVideoModeChange
         </p>
       </div>
 
+      {/* Reference Images (collapsible) */}
+      <div className="mb-5">
+        <button
+          type="button"
+          onClick={() => setShowRefImages(!showRefImages)}
+          className="flex items-center gap-2 text-sm text-warm-600 hover:text-warm-800 transition-colors w-full justify-center"
+        >
+          <svg className={`w-4 h-4 transition-transform ${showRefImages ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+          Reference Images ({allReferenceImages.length}/4)
+        </button>
+        <AnimatePresence>
+          {showRefImages && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden"
+            >
+              <div className="grid grid-cols-2 gap-4 mt-3">
+                {/* Character Reference */}
+                <div>
+                  <label className="block text-xs font-medium text-warm-700 mb-2">Character Reference</label>
+                  <div className="space-y-2">
+                    {characterRefs.map((ref) => (
+                      <div key={ref.id} className="relative group">
+                        <img src={ref.dataUrl} alt={ref.filename} className="w-full h-20 object-cover rounded-lg border border-warm-200/50" />
+                        <button
+                          type="button"
+                          onClick={() => removeRefImage(ref.id)}
+                          className="absolute top-1 right-1 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    ))}
+                    {characterRefs.length < 2 && (
+                      <label className="flex items-center justify-center py-4 border-2 border-dashed border-warm-300/50 rounded-lg cursor-pointer hover:border-accent/50 transition-colors">
+                        <span className="text-xs text-warm-600">+ Add image</span>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png"
+                          className="hidden"
+                          onChange={(e) => handleImageUpload('character', e.target.files)}
+                        />
+                      </label>
+                    )}
+                  </div>
+                </div>
+                {/* Background Reference */}
+                <div>
+                  <label className="block text-xs font-medium text-warm-700 mb-2">Background Reference</label>
+                  <div className="space-y-2">
+                    {environmentRefs.map((ref) => (
+                      <div key={ref.id} className="relative group">
+                        <img src={ref.dataUrl} alt={ref.filename} className="w-full h-20 object-cover rounded-lg border border-warm-200/50" />
+                        <button
+                          type="button"
+                          onClick={() => removeRefImage(ref.id)}
+                          className="absolute top-1 right-1 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    ))}
+                    {environmentRefs.length < 2 && (
+                      <label className="flex items-center justify-center py-4 border-2 border-dashed border-warm-300/50 rounded-lg cursor-pointer hover:border-accent/50 transition-colors">
+                        <span className="text-xs text-warm-600">+ Add image</span>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png"
+                          className="hidden"
+                          onChange={(e) => handleImageUpload('environment', e.target.files)}
+                        />
+                      </label>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <p className="text-xs text-warm-600 mt-2 text-center">Upload character and background references to guide AI image generation (max 2 each, 5MB)</p>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
       {/* Input Mode Tabs */}
       <div className="glass-panel p-1 flex gap-1 mb-6">
         {(['url', 'topic', 'pdf'] as const).map((tab) => (
@@ -380,6 +513,24 @@ export function ContentInput({ onSubmit, isLoading, videoMode, onVideoModeChange
                   required
                 />
               </div>
+
+              {isStory && (
+                <div>
+                  <label className="block text-sm font-medium text-warm-700 mb-2">
+                    Your Story (optional)
+                  </label>
+                  <textarea
+                    value={storyText}
+                    onChange={(e) => setStoryText(e.target.value)}
+                    placeholder="Paste or write your story here. Leave empty to let AI generate the story from the topic above..."
+                    className="glass-input w-full resize-y"
+                    rows={6}
+                  />
+                  <p className="mt-1 text-xs text-warm-600">
+                    When provided, the AI will structure your story into video scenes instead of generating its own
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-warm-700 mb-2">

@@ -1,6 +1,7 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, type Part } from '@google/genai';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { ReferenceImage } from '@/lib/types';
 
 let _client: GoogleGenAI | null = null;
 
@@ -20,6 +21,22 @@ function ensureDir() {
   if (!fs.existsSync(GENERATED_DIR)) {
     fs.mkdirSync(GENERATED_DIR, { recursive: true });
   }
+}
+
+/** Convert reference images to Gemini inline data parts */
+function refImagesToParts(refs?: ReferenceImage[]): Part[] {
+  if (!refs?.length) return [];
+  return refs.map((ref) => {
+    // dataUrl format: data:image/png;base64,xxxxx
+    const match = ref.dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+    if (!match) return null;
+    return {
+      inlineData: {
+        mimeType: match[1],
+        data: match[2],
+      },
+    } as Part;
+  }).filter(Boolean) as Part[];
 }
 
 /** Extract and save the first image from a Gemini response. Returns local URL or null. */
@@ -45,16 +62,26 @@ function extractImage(response: Awaited<ReturnType<GoogleGenAI['models']['genera
 export async function generateImage(
   prompt: string,
   sceneId: string,
-  aspectRatio = '16:9'
+  aspectRatio = '16:9',
+  referenceImages?: ReferenceImage[],
 ): Promise<string> {
   const ai = getClient();
   const maxAttempts = 4;
+  const refParts = refImagesToParts(referenceImages);
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
+      // If reference images exist, build multimodal contents with text + images
+      const contents = refParts.length > 0
+        ? [
+            ...refParts,
+            { text: `Use these reference images to guide the visual style and characters. Generate: ${prompt}` },
+          ]
+        : prompt;
+
       const response = await ai.models.generateContent({
         model: MODEL,
-        contents: prompt,
+        contents,
         config: {
           responseModalities: ['IMAGE'],
           imageConfig: {
@@ -159,6 +186,7 @@ export async function generateStoryboard(
   storyContext: string,
   storyOutline: string,
   aspectRatio = '16:9',
+  referenceImages?: ReferenceImage[],
 ): Promise<Map<string, string>> {
   const ai = getClient();
   const results = new Map<string, string>();
@@ -206,9 +234,15 @@ export async function generateStoryboard(
       'I will now describe each frame. Generate an image for each one and briefly note what you drew.',
     ].join('\n');
 
-    console.log('[storyboard] Priming chat with story context + outline...');
+    // Include reference images in the priming message for visual consistency
+    const refParts = refImagesToParts(referenceImages);
+    const primeMessage = refParts.length > 0
+      ? [...refParts, { text: systemMessage + '\n\nThe images above are reference images for character appearance and environment style. Match them closely.' }]
+      : systemMessage;
+
+    console.log(`[storyboard] Priming chat with story context + outline${refParts.length > 0 ? ` + ${refParts.length} reference images` : ''}...`);
     await withRetry(
-      () => chat.sendMessage({ message: systemMessage }),
+      () => chat.sendMessage({ message: primeMessage }),
       'prime',
     );
 
@@ -279,7 +313,7 @@ export async function generateStoryboard(
       console.log(`[storyboard] Falling back to independent generation for ${missing.length} remaining images`);
       for (const task of missing) {
         try {
-          const url = await generateImage(task.prompt, task.jobId, aspectRatio);
+          const url = await generateImage(task.prompt, task.jobId, aspectRatio, referenceImages);
           results.set(task.jobId, url);
         } catch (err) {
           console.error(`[storyboard] Fallback also failed for ${task.jobId}:`, err instanceof Error ? err.message : err);
@@ -294,7 +328,7 @@ export async function generateStoryboard(
     for (const task of tasks) {
       if (results.has(task.jobId)) continue;
       try {
-        const url = await generateImage(task.prompt, task.jobId, aspectRatio);
+        const url = await generateImage(task.prompt, task.jobId, aspectRatio, referenceImages);
         results.set(task.jobId, url);
       } catch (fallbackErr) {
         console.error(`[storyboard] Fallback failed for ${task.jobId}:`, fallbackErr instanceof Error ? fallbackErr.message : fallbackErr);
