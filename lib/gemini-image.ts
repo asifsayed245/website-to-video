@@ -195,6 +195,15 @@ export async function generateStoryboard(
 
   console.log(`[storyboard] Starting multi-turn chat generation for ${tasks.length} images`);
 
+  // Extract character/environment guide text from storyContext for per-frame reinforcement
+  const charLine = storyContext.split('\n').find((l) => l.startsWith('Characters:'));
+  const envLine = storyContext.split('\n').find((l) => l.startsWith('Environment:'));
+  const styleLine = storyContext.split('\n').find((l) => l.startsWith('Visual style:'));
+
+  // Separate character refs from environment refs for targeted reinforcement
+  const charRefs = referenceImages?.filter((r) => r.type === 'character') || [];
+  const envRefs = referenceImages?.filter((r) => r.type === 'environment') || [];
+
   try {
     // Create a chat session with TEXT+IMAGE modalities.
     // TEXT is required alongside IMAGE for multi-turn to work — the model uses
@@ -217,12 +226,15 @@ export async function generateStoryboard(
       '',
       'CRITICAL RULES:',
       '1. EVERY response MUST include a generated image. Never respond with only text.',
-      '2. Maintain STRICT visual consistency across ALL frames:',
-      '   - Same character designs, clothing, proportions, facial features, and colors',
-      '   - Same environment style, lighting mood, and color palette',
-      '3. Story MUST progress — each frame shows a DIFFERENT moment in the narrative:',
+      '2. NEVER CHANGE THE ART STYLE between frames. Every single frame must use the EXACT SAME art style throughout.',
+      `   ${styleLine || ''}`,
+      '3. Maintain STRICT visual consistency across ALL frames:',
+      '   - The SAME character must appear in every frame they are in — identical face, body type, hair, clothing, skin tone',
+      '   - The environment must stay spatially consistent — if a tunnel entrance is next to a bed, it stays next to the bed in ALL frames',
+      '   - Same lighting mood and color palette',
+      '4. Story MUST progress — each frame shows a DIFFERENT moment in the narrative:',
       '   - Characters change position, action, and expression to match the story beat',
-      '   - The setting may shift (e.g., from starting line to forest path to finish line)',
+      '   - The setting may shift but spatial relationships between objects MUST remain consistent',
       '   - Never repeat or regress to an earlier story moment',
       '',
       'STORY WORLD:',
@@ -237,7 +249,7 @@ export async function generateStoryboard(
     // Include reference images in the priming message for visual consistency
     const refParts = refImagesToParts(referenceImages);
     const primeMessage = refParts.length > 0
-      ? [...refParts, { text: systemMessage + '\n\nThe images above are reference images for character appearance and environment style. Match them closely.' }]
+      ? [...refParts, { text: systemMessage + '\n\nThe images above are reference images for character appearance and environment style. The character in these reference images MUST appear in every frame — match their face, body, hair, and clothing EXACTLY.' }]
       : systemMessage;
 
     console.log(`[storyboard] Priming chat with story context + outline${refParts.length > 0 ? ` + ${refParts.length} reference images` : ''}...`);
@@ -249,26 +261,44 @@ export async function generateStoryboard(
     // Generate each image sequentially within the chat
     let chatFailed = false;
 
+    // Re-inject character reference images every N frames to prevent attention decay
+    const REINFORCE_INTERVAL = 3;
+    const charRefParts = refImagesToParts(charRefs);
+
     for (let i = 0; i < tasks.length; i++) {
       const task = tasks[i];
 
       if (chatFailed) break;
 
       try {
+        // Build per-frame reinforcement of character + environment + style
+        const reinforcement: string[] = [];
+        if (charLine) reinforcement.push(`REMEMBER — ${charLine}`);
+        if (envLine) reinforcement.push(`REMEMBER — ${envLine}`);
+        if (styleLine) reinforcement.push(`SAME ART STYLE — ${styleLine}`);
+
         const framePrompt = [
           `FRAME ${i + 1} of ${tasks.length}:`,
           task.prompt,
           '',
-          'Generate this image now. Keep characters visually identical to previous frames but show the story progression described above.',
+          ...reinforcement,
+          '',
+          'Generate this image now. The character MUST look identical to the reference and all previous frames. Keep the EXACT SAME art style. Show the story progression described above.',
         ].join('\n');
 
-        console.log(`[storyboard] Generating frame ${i + 1}/${tasks.length} (${task.jobId})...`);
+        // Re-inject reference images periodically to combat attention decay
+        const shouldReinforceWithImages = charRefParts.length > 0 && i > 0 && i % REINFORCE_INTERVAL === 0;
+        const frameMessage = shouldReinforceWithImages
+          ? [...charRefParts, { text: `(Reference images re-attached for consistency.)\n\n${framePrompt}` }]
+          : framePrompt;
+
+        console.log(`[storyboard] Generating frame ${i + 1}/${tasks.length} (${task.jobId})${shouldReinforceWithImages ? ' [+ref images]' : ''}...`);
 
         // Attempt to get an image — retry with nudge if model returns text-only
         let url: string | null = null;
 
         const response = await withRetry(
-          () => chat.sendMessage({ message: framePrompt }),
+          () => chat.sendMessage({ message: frameMessage }),
           task.jobId,
         );
         url = extractImage(response, task.jobId);

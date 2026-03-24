@@ -125,7 +125,8 @@ export function generateScript(content: StructuredContent, contentStyle: Content
 
 /**
  * Enhance brollPrompts with cross-scene context for visual continuity.
- * Prepends neighboring scene references so image generation maintains flow.
+ * Appends (not prepends) neighboring scene references so the main character/environment
+ * descriptions stay at the front of the prompt where the model pays most attention.
  */
 function addCrossSceneContext(scenes: Scene[]): Scene[] {
   if (scenes.length <= 1) return scenes;
@@ -135,18 +136,16 @@ function addCrossSceneContext(scenes: Scene[]): Scene[] {
 
     if (idx > 0) {
       const prevOverlay = scenes[idx - 1].textOverlay.slice(0, 60);
-      parts.push(`In visual continuity with previous scene: "${prevOverlay}".`);
+      parts.push(`Previous scene was: "${prevOverlay}".`);
     }
     if (idx < scenes.length - 1) {
       const nextOverlay = scenes[idx + 1].textOverlay.slice(0, 60);
-      parts.push(`Transitioning toward next scene: "${nextOverlay}".`);
+      parts.push(`Next scene will be: "${nextOverlay}".`);
     }
 
-    // Consistent lighting/palette instruction
-    parts.push('Maintain consistent lighting, color palette, and visual tone across scenes.');
-
-    const contextPrefix = parts.join(' ') + ' ';
-    return { ...scene, brollPrompt: contextPrefix + scene.brollPrompt };
+    // Append at end so character/environment descriptions stay prominent at start
+    const contextSuffix = parts.length > 0 ? ` ${parts.join(' ')}` : '';
+    return { ...scene, brollPrompt: scene.brollPrompt + contextSuffix };
   });
 }
 
@@ -183,13 +182,15 @@ function generateStoryScript(content: StructuredContent, targetDuration: number 
   ];
 
   // Consistency prefixes — character appearance + environment/setting
+  // These are embedded in EVERY brollPrompt so the image model always has
+  // the full character and environment description anchored in each frame.
   const charPrefix = content.characterGuide
-    ? `Characters in this scene: ${content.characterGuide}. `
+    ? `SAME CHARACTER in every frame: ${content.characterGuide}. `
     : '';
   const envPrefix = content.environmentGuide
-    ? `Setting/environment: ${content.environmentGuide}. `
+    ? `SAME WORLD: ${content.environmentGuide}. `
     : '';
-  const consistencyPrefix = envPrefix + charPrefix;
+  const consistencyPrefix = charPrefix + envPrefix;
 
   let prevStoryShot: ShotDesign | undefined;
 
@@ -297,8 +298,11 @@ function buildStoryScenePrompt(
   setting?: string,
   shot?: ShotDesign
 ): string {
-  const context = narration.length > 120 ? narration.slice(0, 120) : narration;
-  const settingClause = setting ? ` Location: ${setting}.` : '';
+  // Use full narration (up to 350 chars) so spatial details, story elements, and
+  // character actions aren't lost — the previous 120 char limit caused images to
+  // diverge from the script.
+  const context = narration.length > 350 ? narration.slice(0, 350) : narration;
+  const settingClause = setting ? ` EXACT Location: ${setting}.` : '';
   const shotClause = shot ? ` ${shot.promptFragment}` : '';
-  return `${shotClause} A cinematic, atmospheric illustration of this scene from a story: "${context}". Scene title: "${heading}" from the story "${storyTitle}".${settingClause} Visual mood: ${moodStyle}. Film-like composition, dramatic lighting, rich colors. Evocative and emotional. No text, no words, no letters, no watermarks`;
+  return `${shotClause} Scene: "${heading}" from "${storyTitle}". What is happening: ${context}.${settingClause} Visual mood: ${moodStyle}. No text, no words, no letters, no watermarks`;
 }

@@ -134,33 +134,34 @@ export async function POST(req: Request) {
       const cam = cameraByScene.get(scene.id);
       const compositionHint = cam ? ` ${deriveCompositionHint(cam.movement, scene.shotDesign?.size)}` : '';
 
+      // Build the full prompt: brollPrompt already has character/environment at front.
+      // Insert style + instruction right after brollPrompt (before composition hints)
+      // so the model sees style early, not buried at the end.
+      const styledBase = scene.brollPrompt + styleSuffix + instructionSuffix;
+
       if (imageCount === 1) {
-        // Single image — use the scene's full brollPrompt (already has consistency context)
         imageTasks.push({
           jobId: `img-${scene.id}-0`,
           sceneId: scene.id,
-          prompt: scene.brollPrompt + compositionHint + styleSuffix + instructionSuffix,
+          prompt: styledBase + compositionHint,
           sortOrder: 0,
         });
       } else {
         // Multiple images — keep the SAME base prompt (environment + character + setting)
         // and only vary the narration moment focus for each sub-image.
-        // This ensures all images within a scene share the same environment.
         const segments = splitNarration(scene.narration, imageCount);
 
         for (let i = 0; i < imageCount; i++) {
           const narrationFocus = buildNarrationFocus(segments[i], scene.narration);
-          // Add sequential position context for multi-image continuity
           const positionHint = ` [Image ${i + 1} of ${imageCount} — scene progression].`;
           const continuityHint = i > 0 ? ' Maintain same environment, lighting, and subject positioning as previous frame.' : '';
-          // Sub-shot variation: tighter framing for alternating images (cut-in pattern)
           const subShotHint = scene.shotDesign && i > 0
             ? ` ${getSubShot(scene.shotDesign, i).promptFragment}`
             : '';
           imageTasks.push({
             jobId: `img-${scene.id}-${i}`,
             sceneId: scene.id,
-            prompt: scene.brollPrompt + narrationFocus + positionHint + continuityHint + subShotHint + compositionHint + styleSuffix + instructionSuffix,
+            prompt: styledBase + narrationFocus + positionHint + continuityHint + subShotHint + compositionHint,
             sortOrder: i,
           });
         }

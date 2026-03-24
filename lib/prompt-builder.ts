@@ -11,24 +11,22 @@ export function rebuildBrollPrompt(
 ): string {
   const parts: string[] = [];
 
-  // Core visual from narration
-  if (scene.narration) {
-    parts.push(scene.narration.slice(0, 200));
+  // Character and environment FIRST so they get highest attention from the model
+  if (contentStyle === 'story' && script.characterGuide) {
+    parts.push(`SAME CHARACTER in every frame: ${script.characterGuide}`);
+  }
+  if (contentStyle === 'story' && script.environmentGuide) {
+    parts.push(`SAME WORLD: ${script.environmentGuide}`);
   }
 
-  // Text overlay adds context
+  // Scene title for context
   if (scene.textOverlay) {
     parts.push(`Scene: "${scene.textOverlay}"`);
   }
 
-  // Character consistency
-  if (contentStyle === 'story' && script.characterGuide) {
-    parts.push(`Character: ${script.characterGuide.slice(0, 100)}`);
-  }
-
-  // Environment consistency
-  if (contentStyle === 'story' && script.environmentGuide) {
-    parts.push(`Setting: ${script.environmentGuide.slice(0, 100)}`);
+  // Core visual from narration (up to 350 chars to preserve story details)
+  if (scene.narration) {
+    parts.push(`What is happening: ${scene.narration.slice(0, 350)}`);
   }
 
   const base = parts.join('. ').replace(/\.\./g, '.');
