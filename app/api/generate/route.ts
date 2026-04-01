@@ -127,56 +127,78 @@ export async function POST(req: Request) {
       : null;
     const imageTasks: ImageTask[] = [];
 
+    // Detect story mode: use multi-turn chat for visual consistency
+    const isStoryMode = !!(script.characterGuide || script.environmentGuide);
+
     for (const scene of script.scenes) {
       const imageCount = planSceneImageCount(scene, clipDuration);
 
-      // Get composition hint from planned camera movement
-      const cam = cameraByScene.get(scene.id);
-      const compositionHint = cam ? ` ${deriveCompositionHint(cam.movement, scene.shotDesign?.size)}` : '';
+      if (isStoryMode) {
+        // STORY MODE: Lean, focused prompts. Character/environment/style context
+        // lives in the storyboard chat system message — don't duplicate it here.
+        // Shorter prompts = model pays more attention to each instruction.
+        const setting = scene.shotDesign
+          ? `${scene.shotDesign.promptFragment} `
+          : '';
 
-      // Build the full prompt: brollPrompt already has character/environment at front.
-      // Insert style + instruction right after brollPrompt (before composition hints)
-      // so the model sees style early, not buried at the end.
-      const styledBase = scene.brollPrompt + styleSuffix + instructionSuffix;
-
-      if (imageCount === 1) {
-        imageTasks.push({
-          jobId: `img-${scene.id}-0`,
-          sceneId: scene.id,
-          prompt: styledBase + compositionHint,
-          sortOrder: 0,
-        });
-      } else {
-        // Multiple images — keep the SAME base prompt (environment + character + setting)
-        // and only vary the narration moment focus for each sub-image.
-        const segments = splitNarration(scene.narration, imageCount);
-
-        for (let i = 0; i < imageCount; i++) {
-          const narrationFocus = buildNarrationFocus(segments[i], scene.narration);
-          const positionHint = ` [Image ${i + 1} of ${imageCount} — scene progression].`;
-          const continuityHint = i > 0 ? ' Maintain same environment, lighting, and subject positioning as previous frame.' : '';
-          const subShotHint = scene.shotDesign && i > 0
-            ? ` ${getSubShot(scene.shotDesign, i).promptFragment}`
-            : '';
+        if (imageCount === 1) {
           imageTasks.push({
-            jobId: `img-${scene.id}-${i}`,
+            jobId: `img-${scene.id}-0`,
             sceneId: scene.id,
-            prompt: styledBase + narrationFocus + positionHint + continuityHint + subShotHint + compositionHint,
-            sortOrder: i,
+            prompt: `${setting}Scene: "${scene.textOverlay}". ${scene.narration}`,
+            sortOrder: 0,
           });
+        } else {
+          const segments = splitNarration(scene.narration, imageCount);
+          for (let i = 0; i < imageCount; i++) {
+            imageTasks.push({
+              jobId: `img-${scene.id}-${i}`,
+              sceneId: scene.id,
+              prompt: `${setting}Scene: "${scene.textOverlay}". ${segments[i]}`,
+              sortOrder: i,
+            });
+          }
+        }
+      } else {
+        // BUSINESS MODE: Full brollPrompt with all cinematography hints (unchanged)
+        const cam = cameraByScene.get(scene.id);
+        const compositionHint = cam ? ` ${deriveCompositionHint(cam.movement, scene.shotDesign?.size)}` : '';
+        const styledBase = scene.brollPrompt + styleSuffix + instructionSuffix;
+
+        if (imageCount === 1) {
+          imageTasks.push({
+            jobId: `img-${scene.id}-0`,
+            sceneId: scene.id,
+            prompt: styledBase + compositionHint,
+            sortOrder: 0,
+          });
+        } else {
+          const segments = splitNarration(scene.narration, imageCount);
+          for (let i = 0; i < imageCount; i++) {
+            const narrationFocus = buildNarrationFocus(segments[i], scene.narration);
+            const positionHint = ` [Image ${i + 1} of ${imageCount} — scene progression].`;
+            const continuityHint = i > 0 ? ' Maintain same environment, lighting, and subject positioning as previous frame.' : '';
+            const subShotHint = scene.shotDesign && i > 0
+              ? ` ${getSubShot(scene.shotDesign, i).promptFragment}`
+              : '';
+            imageTasks.push({
+              jobId: `img-${scene.id}-${i}`,
+              sceneId: scene.id,
+              prompt: styledBase + narrationFocus + positionHint + continuityHint + subShotHint + compositionHint,
+              sortOrder: i,
+            });
+          }
         }
       }
     }
 
-    // Detect story mode: use multi-turn chat for visual consistency
-    const isStoryMode = !!(script.characterGuide || script.environmentGuide);
-
     if (isStoryMode) {
       // Story mode: sequential chat-based generation for storyboard consistency
       const storyContext = [
-        script.characterGuide ? `Characters: ${script.characterGuide}` : '',
+        script.characterGuide ? `Character: ${script.characterGuide}` : '',
         script.environmentGuide ? `Environment: ${script.environmentGuide}` : '',
-        `Visual style: ${styleSuffix}`,
+        `Art style: ${styleSuffix.trim()}`,
+        instructionSuffix ? `Instruction: ${script.imageInstruction?.trim()}` : '',
       ].filter(Boolean).join('\n');
 
       // Build a numbered story outline so the model understands the full arc

@@ -71,12 +71,10 @@ export async function generateImage(
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      // If reference images exist, build multimodal contents with text + images
+      // If reference images exist, build multimodal contents with images + text prompt.
+      // The prompt itself already describes how to use the images — don't add extra preamble.
       const contents = refParts.length > 0
-        ? [
-            ...refParts,
-            { text: `Use these reference images to guide the visual style and characters. Generate: ${prompt}` },
-          ]
+        ? [...refParts, { text: prompt }]
         : prompt;
 
       const response = await ai.models.generateContent({
@@ -121,6 +119,101 @@ export async function generateImage(
   }
 
   throw new Error(`generateImage: exhausted ${maxAttempts} attempts for ${sceneId}`);
+}
+
+/**
+ * Edit an existing image using Gemini's multimodal editing capability.
+ *
+ * Uses a multi-turn chat structure (per Google's official quickstart):
+ * - Turn 1 (user): presents the image
+ * - Turn 1 (model): acknowledges + includes image in response (establishes "ownership")
+ * - Turn 2 (user): requests the specific edit
+ *
+ * IMPORTANT: No imageConfig constraints — forcing size/aspect during editing
+ * causes the model to regenerate from scratch instead of editing in-place.
+ */
+export async function editImage(
+  editInstruction: string,
+  sourceImage: ReferenceImage,
+  sceneId: string,
+): Promise<string> {
+  const ai = getClient();
+  const maxAttempts = 4;
+
+  // Convert source image to inline data part
+  const match = sourceImage.dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+  if (!match) throw new Error('Invalid source image data URL');
+  const imagePart: Part = { inlineData: { mimeType: match[1], data: match[2] } };
+
+  console.log(`[editImage] Starting edit for ${sceneId} | instruction: "${editInstruction}" | image size: ${match[2].length} bytes base64`);
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      // Multi-turn chat structure following Google's official image editing quickstart.
+      // The model's "previous response" includes the image as inlineData, which tells
+      // the model it "owns" the image and should modify it rather than generate anew.
+      const response = await ai.models.generateContent({
+        model: MODEL,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: 'Here is my current image. Remember every detail.' },
+              imagePart,
+            ],
+          },
+          {
+            role: 'model',
+            parts: [
+              { text: 'I can see the image clearly. I have noted all the details — the subjects, composition, colors, lighting, and style. What changes would you like me to make?' },
+              imagePart,
+            ],
+          },
+          {
+            role: 'user',
+            parts: [
+              { text: editInstruction },
+            ],
+          },
+        ],
+        config: {
+          // TEXT+IMAGE required for editing per Gemini docs
+          responseModalities: ['TEXT', 'IMAGE'],
+          // NO imageConfig — do not force size/aspect ratio during editing.
+          // Constraints cause the model to regenerate instead of editing.
+        },
+      });
+
+      const url = extractImage(response, sceneId);
+      if (!url) {
+        // Log what the model actually returned
+        const textParts = response.candidates?.[0]?.content?.parts?.filter((p) => p.text);
+        console.warn(`[editImage] No image in response. Model text: ${textParts?.map((p) => p.text).join(' ') || '(empty)'}`);
+        throw new Error('Gemini returned no image data for edit');
+      }
+      console.log(`[editImage] Success for ${sceneId}: ${url}`);
+      return url;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const lower = msg.toLowerCase();
+      const isRetryable =
+        msg.includes('429') || msg.includes('500') || msg.includes('503') ||
+        lower.includes('rate') || lower.includes('quota') ||
+        lower.includes('resource_exhausted') || lower.includes('internal') ||
+        lower.includes('unavailable') || lower.includes('overloaded');
+
+      if (isRetryable && attempt < maxAttempts - 1) {
+        const wait = (attempt + 1) * 3000;
+        console.log(`[editImage] ${sceneId} attempt ${attempt + 1}/${maxAttempts}: ${msg}. Retrying in ${wait / 1000}s...`);
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      console.error(`[editImage] Failed for ${sceneId} after ${attempt + 1} attempts: ${msg}`);
+      throw err;
+    }
+  }
+
+  throw new Error(`editImage: exhausted ${maxAttempts} attempts for ${sceneId}`);
 }
 
 /**
@@ -195,19 +288,11 @@ export async function generateStoryboard(
 
   console.log(`[storyboard] Starting multi-turn chat generation for ${tasks.length} images`);
 
-  // Extract character/environment guide text from storyContext for per-frame reinforcement
-  const charLine = storyContext.split('\n').find((l) => l.startsWith('Characters:'));
-  const envLine = storyContext.split('\n').find((l) => l.startsWith('Environment:'));
-  const styleLine = storyContext.split('\n').find((l) => l.startsWith('Visual style:'));
-
-  // Separate character refs from environment refs for targeted reinforcement
-  const charRefs = referenceImages?.filter((r) => r.type === 'character') || [];
-  const envRefs = referenceImages?.filter((r) => r.type === 'environment') || [];
+  // All reference images (character + environment) for per-frame reinforcement
+  const allRefParts = refImagesToParts(referenceImages);
+  const hasRefs = allRefParts.length > 0;
 
   try {
-    // Create a chat session with TEXT+IMAGE modalities.
-    // TEXT is required alongside IMAGE for multi-turn to work — the model uses
-    // text reasoning to maintain consistency across turns.
     const chat = ai.chats.create({
       model: MODEL,
       config: {
@@ -219,51 +304,34 @@ export async function generateStoryboard(
       },
     });
 
-    // Prime the chat with the story world + full story outline
+    // System message: short, direct, focused on the 3 things that matter most:
+    // 1. Same character appearance  2. Same art style  3. Same spatial layout
     const systemMessage = [
-      'You are a storyboard artist creating a sequence of images for a video.',
-      `You will generate exactly ${tasks.length} frames, one at a time.`,
+      `You are generating ${tasks.length} storyboard frames for a video. One image per response.`,
       '',
-      'CRITICAL RULES:',
-      '1. EVERY response MUST include a generated image. Never respond with only text.',
-      '2. NEVER CHANGE THE ART STYLE between frames. Every single frame must use the EXACT SAME art style throughout.',
-      `   ${styleLine || ''}`,
-      '3. Maintain STRICT visual consistency across ALL frames:',
-      '   - The SAME character must appear in every frame they are in — identical face, body type, hair, clothing, skin tone',
-      '   - The environment must stay spatially consistent — if a tunnel entrance is next to a bed, it stays next to the bed in ALL frames',
-      '   - Same lighting mood and color palette',
-      '4. Story MUST progress — each frame shows a DIFFERENT moment in the narrative:',
-      '   - Characters change position, action, and expression to match the story beat',
-      '   - The setting may shift but spatial relationships between objects MUST remain consistent',
-      '   - Never repeat or regress to an earlier story moment',
+      'RULES (follow these EXACTLY):',
+      '- ALWAYS generate an image. Never respond with text only.',
+      '- SAME CHARACTER in every frame: identical face, body, hair, skin, clothing. Never change the character.',
+      '- SAME ART STYLE in every frame. Never switch between 2D/3D or change rendering style.',
+      '- SAME SPATIAL LAYOUT: objects stay in the same relative positions. If something is on the left, it stays on the left.',
       '',
-      'STORY WORLD:',
       storyContext,
       '',
-      'FULL STORY ARC (so you understand the complete narrative):',
+      'STORY:',
       storyOutline,
-      '',
-      'I will now describe each frame. Generate an image for each one and briefly note what you drew.',
     ].join('\n');
 
-    // Include reference images in the priming message for visual consistency
-    const refParts = refImagesToParts(referenceImages);
-    const primeMessage = refParts.length > 0
-      ? [...refParts, { text: systemMessage + '\n\nThe images above are reference images for character appearance and environment style. The character in these reference images MUST appear in every frame — match their face, body, hair, and clothing EXACTLY.' }]
+    const primeMessage = hasRefs
+      ? [...allRefParts, { text: systemMessage + '\n\nThese reference images show EXACTLY how the character and environment should look. Copy them precisely in every frame.' }]
       : systemMessage;
 
-    console.log(`[storyboard] Priming chat with story context + outline${refParts.length > 0 ? ` + ${refParts.length} reference images` : ''}...`);
+    console.log(`[storyboard] Priming chat${hasRefs ? ` with ${allRefParts.length} reference images` : ''}...`);
     await withRetry(
       () => chat.sendMessage({ message: primeMessage }),
       'prime',
     );
 
-    // Generate each image sequentially within the chat
     let chatFailed = false;
-
-    // Re-inject character reference images every N frames to prevent attention decay
-    const REINFORCE_INTERVAL = 3;
-    const charRefParts = refImagesToParts(charRefs);
 
     for (let i = 0; i < tasks.length; i++) {
       const task = tasks[i];
@@ -271,28 +339,17 @@ export async function generateStoryboard(
       if (chatFailed) break;
 
       try {
-        // Build per-frame reinforcement of character + environment + style
-        const reinforcement: string[] = [];
-        if (charLine) reinforcement.push(`REMEMBER — ${charLine}`);
-        if (envLine) reinforcement.push(`REMEMBER — ${envLine}`);
-        if (styleLine) reinforcement.push(`SAME ART STYLE — ${styleLine}`);
+        // Keep per-frame prompt SHORT. The system message already has all context.
+        // Only describe what's different: the action happening in this frame.
+        const framePrompt = `FRAME ${i + 1}/${tasks.length}: ${task.prompt}. Same character, same style, same world.`;
 
-        const framePrompt = [
-          `FRAME ${i + 1} of ${tasks.length}:`,
-          task.prompt,
-          '',
-          ...reinforcement,
-          '',
-          'Generate this image now. The character MUST look identical to the reference and all previous frames. Keep the EXACT SAME art style. Show the story progression described above.',
-        ].join('\n');
-
-        // Re-inject reference images periodically to combat attention decay
-        const shouldReinforceWithImages = charRefParts.length > 0 && i > 0 && i % REINFORCE_INTERVAL === 0;
-        const frameMessage = shouldReinforceWithImages
-          ? [...charRefParts, { text: `(Reference images re-attached for consistency.)\n\n${framePrompt}` }]
+        // Attach reference images on EVERY frame to prevent any character/style drift.
+        // This is the single most effective technique for visual consistency.
+        const frameMessage = hasRefs
+          ? [...allRefParts, { text: framePrompt }]
           : framePrompt;
 
-        console.log(`[storyboard] Generating frame ${i + 1}/${tasks.length} (${task.jobId})${shouldReinforceWithImages ? ' [+ref images]' : ''}...`);
+        console.log(`[storyboard] Generating frame ${i + 1}/${tasks.length} (${task.jobId})${hasRefs ? ' [+refs]' : ''}...`);
 
         // Attempt to get an image — retry with nudge if model returns text-only
         let url: string | null = null;

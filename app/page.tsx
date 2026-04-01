@@ -18,6 +18,33 @@ import { calculateSceneDurations } from '@/lib/audio-timing';
 import { ContentInput, type URLData, type TopicData, type PDFData } from '@/components/ContentInput';
 import { ScriptEditor } from '@/components/ScriptEditor';
 import { AssetGallery } from '@/components/AssetGallery';
+
+/** Fetch with AbortController timeout. Returns a descriptive error on failure. */
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 120_000,
+  label = 'Request',
+): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s. Please try again.`);
+    }
+    // "Failed to fetch" → friendlier message
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg === 'Failed to fetch') {
+      throw new Error(`${label} failed — server may be busy or not responding. Please try again.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(id);
+  }
+}
 import { VideoPreview } from '@/components/VideoPreview';
 import { DownloadPanel } from '@/components/DownloadPanel';
 import { ProgressTracker } from '@/components/ProgressTracker';
@@ -112,21 +139,21 @@ export default function Home() {
           formData.append('referenceImages', JSON.stringify(refImages));
         }
 
-        contentRes = await fetch('/api/parse-pdf', {
+        contentRes = await fetchWithTimeout('/api/parse-pdf', {
           method: 'POST',
           body: formData,
-        });
+        }, 120_000, 'PDF processing');
       } else {
         const endpoint = data.mode === 'url' ? '/api/scrape' : '/api/research';
         const body = data.mode === 'url'
           ? { url: data.url, targetDuration: duration, contentStyle: style, scriptLanguage: lang, audioMode: aMode, referenceImages: refImages }
           : data;
 
-        contentRes = await fetch(endpoint, {
+        contentRes = await fetchWithTimeout(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
-        });
+        }, 120_000, 'Content research');
       }
 
       if (!contentRes.ok) {
@@ -139,11 +166,11 @@ export default function Home() {
       if (refImages?.length) contentData.referenceImages = refImages;
       setContent(contentData);
 
-      const scriptRes = await fetch('/api/analyze', {
+      const scriptRes = await fetchWithTimeout('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: contentData, contentStyle: style, targetDuration: duration, scriptLanguage: lang, audioMode: aMode }),
-      });
+      }, 30_000, 'Script generation');
 
       if (!scriptRes.ok) {
         const err = await scriptRes.json().catch(() => ({}));
@@ -169,11 +196,11 @@ export default function Home() {
     setError(null);
 
     try {
-      const res = await fetch('/api/generate', {
+      const res = await fetchWithTimeout('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...script, targetDuration }),
-      });
+      }, 300_000, 'Asset generation');
 
       let data: Record<string, unknown>;
       try {
@@ -241,7 +268,7 @@ export default function Home() {
     setError(null);
 
     try {
-      const res = await fetch('/api/generate-clips', {
+      const res = await fetchWithTimeout('/api/generate-clips', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -252,7 +279,7 @@ export default function Home() {
           clipDuration: currentScript.clipDuration,
           audioMode: currentScript.audioMode,
         }),
-      });
+      }, 120_000, 'Clip generation');
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -426,7 +453,7 @@ export default function Home() {
     setRenderFiles([]);
 
     try {
-      const res = await fetch('/api/render', {
+      const res = await fetchWithTimeout('/api/render', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -435,7 +462,7 @@ export default function Home() {
           jobs: [...jobs, ...clipJobs],
           audioMode: script?.audioMode || 'narration',
         }),
-      });
+      }, 300_000, 'Video render');
 
       if (!res.ok) {
         const err = await res.json();
@@ -467,7 +494,7 @@ export default function Home() {
       const prevImageUrl = jobIndex > 0 ? imageJobs[jobIndex - 1].resultUrl : undefined;
       const nextImageUrl = jobIndex < imageJobs.length - 1 ? imageJobs[jobIndex + 1].resultUrl : undefined;
 
-      const res = await fetch('/api/regenerate-image', {
+      const res = await fetchWithTimeout('/api/regenerate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -478,11 +505,10 @@ export default function Home() {
           imageStyle: script.imageStyle,
           imageInstruction: script.imageInstruction,
           referenceImages: script.referenceImages,
-          characterGuide: script.characterGuide,
-          environmentGuide: script.environmentGuide,
+          currentImageUrl: job.resultUrl,
           neighborImageUrls: [prevImageUrl, nextImageUrl].filter(Boolean),
         }),
-      });
+      }, 120_000, 'Image regeneration');
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
